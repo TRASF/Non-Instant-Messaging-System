@@ -1,222 +1,229 @@
-import socket
+import tkinter as tk
+from tkinter import ttk
 
-SERVER_ADDRESS = ("localhost", 2001)
-
-userUID = None
-
-
-def send_request(command, args=[]):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-        try:
-            client_socket.connect(SERVER_ADDRESS)
-
-            request = f"{command} {' '.join(args)}"
-            client_socket.sendall(request.encode("utf-8"))
-
-            response = client_socket.recv(1024).decode("utf-8")
-            return response
-
-        except ConnectionRefusedError:
-            print("Connection to the server was refused.")
-        except Exception as e:
-            print(f"An error occurred: {e}")
+from tkinter import messagebox
+from tkinter.scrolledtext import ScrolledText
+import functions as f
+from datetime import datetime
+import sv_ttk
 
 
-def register_user():
-    global userUID
-    username = input("Enter the username to register: ")
-    userUID = send_request("register", [username])
-    if not userUID == "User already exists":
-        userUID = userUID.split(" ")[-1]
-    else:
-        print("User already exists.")
+def convert_timestamp(timestamp_str):
+    # Parse the timestamp to a datetime object
+    dt_object = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+    # Convert the datetime object to the desired string format
+    return dt_object.strftime("%b %d, %Y, %I:%M:%S %p")
 
 
-def login_user():
-    global userUID
-    username = input("Enter the username to login: ")
-    userUID = send_request("login", [username])
+class MessagingApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Messaging App")
+        self.geometry("400x600")
 
+        # self.tk.call("source", "./Azure-ttk-theme-2.1.0/azure.tcl")
+        # # ttk.Style().theme_use("azure")
+        sv_ttk.use_dark_theme()
 
-def get_latest_messages():
-    global userUID
-    if not userUID:
-        userUID = input("Enter your username: ")
-    response = send_request("updates", [userUID])
+        self.username = None
+        self.chat_partner = None
+        self.init_login_interface()
+        self.client = f.Client()
 
-    if response == "No new messages":
-        print(response)
-        return
+    def init_login_interface(self):
+        for widget in self.winfo_children():
+            widget.destroy()
 
-    message_list = response.split("\n")
+        login_frame = tk.Frame(self)
+        login_frame.pack(pady=20)
 
-    senders = {}
-    current_sender = None
-    current_time = None
-    current_message = None
+        ttk.Label(login_frame, text="Username:").grid(row=0, column=0)
+        self.username_entry = ttk.Entry(login_frame)
+        self.username_entry.grid(row=0, column=1)
+        self.username_entry.focus_set()
 
-    for line in message_list:
-        if line.startswith("From:") or line.startswith("\\nFrom:"):
-            # print("From line", line)
-            current_sender = line.split("From:")[1].strip()
-        elif line.startswith("\\nTime:") or line.startswith("Time:"):
-            # print("Time", line)
-            current_time = line.split("Time:")[1].strip()
-        elif line.startswith("\\nMessage:") or line.startswith("Message:"):
-            # print("Message", line)
-            current_message = line.split("Message:")[1].strip()
+        ttk.Button(login_frame, text="Login", command=self.login).grid(row=1, column=0)
+        ttk.Button(login_frame, text="Register", command=self.register).grid(
+            row=1, column=1
+        )
 
-            if current_sender and current_time and current_message:
-                if current_sender not in senders:
-                    senders[current_sender] = []
-                senders[current_sender].append(
-                    {"time": current_time, "message": current_message}
-                )
+    def show_chat_list(self):
+        # Clear the current GUI
+        for widget in self.winfo_children():
+            widget.destroy()
 
-                # Reset the variables after processing a complete message
-                current_time = None
-                current_message = None
+        # Set up the chat list GUI
+        chat_list_frame = tk.Frame(self)
+        chat_list_frame.pack(pady=20)
 
-    # Display the messages
-    for sender, messages in senders.items():
-        print("\n")
-        print("=" * 50)
-        print(f"\t\tMessages from {sender}:")
-        print("=" * 50)
-        for msg in messages:
-            print(f"Time: {msg['time']}")
-            print(f"Message: {msg['message']}")
-            print("-" * 50)
-        print("\n")
+        style = ttk.Style()
+        style.configure("CustomListbox.TListbox", background="white", borderwidth=0)
 
+        self.chat_listbox = tk.Listbox(
+            chat_list_frame,
+            height=15,
+            width=50,
+            bd=1,
+            highlightthickness=0,
+            selectbackground="#b6d7a8",
+            activestyle="none",
+            exportselection=False,
+            relief="flat",
+        )
+        self.chat_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.chat_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ttk.Button(
+            chat_list_frame, text="Back", command=self.init_login_interface
+        ).pack(side=tk.BOTTOM)
 
-def get_read_messages():
-    username = input("Enter your username: ")
-    message = input("Enter the message to read: ")
-    send_request("write", [username, message])
+        # Retrieve the chat list from the server and update the chat listbox
+        success, chat_list = self.client.get_chat_list()
+        if success:
+            self.update_chat_list(chat_list)
+        else:
+            messagebox.showerror("Error", "Could not retrieve chat list.")
 
+        self.chat_listbox.bind("<Double-Button-1>", self.on_select_chat_partner)
 
-def get_sent_messages():
-    global userUID
-    if not userUID:
-        userUID = input("Enter your username: ")
-    messages = send_request("sent", [userUID])
+        # Add a refresh button
+        refresh_button = ttk.Button(
+            chat_list_frame, text="Refresh", command=self.refresh_chat_list
+        )
+        refresh_button.pack(side=tk.BOTTOM)
 
-    receiver = {}
-    current_receiver = None
-    current_message = None
+    def update_chat_list(self, chat_list):
+        self.chat_listbox.delete(0, tk.END)  # Clear the current list
+        for chat_partner in chat_list:
+            self.chat_listbox.insert(tk.END, chat_partner)
 
-    for line in messages.split("\n"):
-        line = line.strip()  # Remove leading/trailing whitespace
-        if line.startswith("To:"):
-            if current_message:
-                if current_receiver not in receiver:
-                    receiver[current_receiver] = []
-                receiver[current_receiver].append(current_message)
-            current_receiver = line.split("To:")[1].strip()
-            current_message = {"Receiver": current_receiver}
-        elif line.startswith("Time:"):
-            current_message["Time"] = line.split("Time:")[1].strip()
-        elif line.startswith("Message:"):
-            current_message["Message"] = line.split("Message:")[1].strip()
-        elif line.startswith("Read at:"):
-            current_message["Read"] = line.split("Read at:")[1].strip()
+    def refresh_chat_list(self):
+        success, chat_list = self.client.get_chat_list()
+        if success:
+            self.update_chat_list(chat_list)
+        else:
+            messagebox.showerror("Error", "Could not refresh chat list.")
 
-    # Append the last message
-    if current_message:
-        if current_receiver not in receiver:
-            receiver[current_receiver] = []
-        receiver[current_receiver].append(current_message)
+    def on_select_chat_partner(self, event):
+        selection = self.chat_listbox.curselection()
+        if selection:
+            index = selection[0]
+            self.chat_partner = self.chat_listbox.get(index)
+            self.show_chat_history(self.chat_partner)
 
-    # Display the messages
-    for receiver, messages in receiver.items():
-        print("\n")
-        print("=" * 50)
-        print(f"\t\tMessages to {receiver}:")
-        print("=" * 50)
-        for msg in messages:
-            print(f"Time: {msg.get('Time', '')}")
-            print(f"Message: {msg.get('Message', '')}")
-            if msg.get("Read"):
-                print(f"Read at: {msg.get('Read', '')}")
-            print("-" * 50)
-        print("\n")
+    def show_chat_history(self, target_user):
+        for widget in self.winfo_children():
+            widget.destroy()
 
+        chat_frame = ttk.Frame(self)
+        style = ttk.Style()
+        chat_frame.pack(pady=20, fill=tk.BOTH, expand=True)
+        style.configure("CustomText.TText", background="white", borderwidth=0)
+        self.chat_text = ScrolledText(chat_frame, state="disabled", height=20, width=50)
+        self.chat_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-def delete_message():
-    username = input("Enter your username: ")
-    message_id = input("Enter message ID to delete: ")
-    send_request("delete", [username, message_id])
+        self.message_entry = ttk.Entry(chat_frame, width=40)
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.message_entry.focus_set()
 
+        ttk.Button(chat_frame, text="Send", command=self.send_message).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(chat_frame, text="Back", command=self.show_chat_list).pack(
+            side=tk.BOTTOM
+        )
 
-def write_message():
-    # The client should send a request to the server to write a message.
-    # Including receiverUID and message
-    receiverUID = input("Enter the receiverUID: ")
-    message = input("Enter the message to send: ")
-    send_request("write", [userUID, receiverUID, message])
+        # Fetch the chat history from the server and display it
+        success, chat_history = self.client.get_chat_history(target_user)
+        if success:
+            self.display_chat_history(
+                chat_history
+            )  # Call the function to display the history
+        else:
+            messagebox.showerror("Error", "Could not retrieve chat history.")
 
+    def display_chat_history(self, chat_history):
+        self.chat_text.configure(state="normal")
+        self.chat_text.delete("1.0", tk.END)  # Clear existing text
 
-def save_message():
-    username = input("Enter your username: ")
-    message = input("Enter the message to save: ")
-    send_request("save", [username, message])
+        for message in chat_history:
+            sender = message["from"]
+            content = message["message"]
+            sent_at = convert_timestamp(message["sent_at"])
+            read_at = message.get("read_at")
 
+            display_message = f"{sent_at} {sender}: {content}"
+            if read_at:
+                read_at_formatted = convert_timestamp(read_at)
+                display_message += f" (Read at: {read_at_formatted})"
 
-def main():
-    global userUID
-    while True:
-        if (
-            userUID == "User does not exist"
-            or userUID == "User already exists"
-            or userUID is None
-        ):
-            print("----" * 10)
-            print("You are not logged in.")
-            print("----" * 10)
-            choice = input(
-                """Available commands
-                1. Register a User
-                2. Login a User
-                6. Exit 
-                Enter your choice (1, 2, or 6): """
+            self.chat_text.insert(tk.END, f"{display_message}\n")
+
+        self.chat_text.yview(tk.END)  # Scroll to the bottom
+        self.chat_text.configure(state="disabled")
+
+    def send_message(self):
+        message = self.message_entry.get().strip()
+        if message:
+            # Send the message to the server
+            success, response_message = self.client.send_message(
+                self.chat_partner, message
             )
-        else:
-            print("___" * 10)
-            print(f"You are logged in as {userUID}")
-            print("___" * 10)
-            if userUID:  # Check if the user is logged in
-                choice = input(
-                    f"""Available commands
-                    3. Get Latest Messages
-                    4. Write a Message
-                    5. Get Sent Messages
-                    6. Exit 
-                    Enter your choice (3-6): """
-                )
+            if success:
+                self.message_entry.delete(0, "end")  # Clear the input field
+                self.update_chat_history(
+                    self.chat_partner, message
+                )  # Update the chat history with the new message
             else:
-                choice = input(
-                    """Available commands
-                    6. Exit 
-                    Enter your choice (6): """
-                )
-
-        if choice == "1":
-            register_user()
-        elif choice == "2":
-            login_user()
-        elif choice == "3":
-            get_latest_messages()
-        elif choice == "4":
-            write_message()
-        elif choice == "5":
-            get_sent_messages()
-        elif choice == "6":
-            print("Exiting the client.")
-            break
+                messagebox.showerror("Error", response_message)
         else:
-            print("Invalid choice. Please select a valid option.")
+            messagebox.showwarning("Warning", "You cannot send an empty message.")
+
+    def update_chat_history(self, target_user, message):
+        # This method should be updated to actually fetch and display the chat history
+        # For now, it simply appends the new message to the chat history text box
+        self.chat_text.configure(state="normal")
+        self.chat_text.insert(tk.END, f"{self.username}: {message}\n")
+        self.chat_text.yview(tk.END)  # Scroll to the bottom
+        self.chat_text.configure(state="disabled")
+
+    def login(self):
+        self.username = self.username_entry.get()
+        if self.username:
+            success, message = self.client.login_user(self.username)
+            if success:
+                self.show_chat_list()
+            else:
+                messagebox.showerror("Login Failed", message)
+        else:
+            messagebox.showerror("Login Failed", "Please enter a username.")
+
+    def register(self):
+        self.username = self.username_entry.get()
+        if self.username:
+            success, message = self.client.register_user(self.username)
+            if success:
+                self.show_chat_list()
+            else:
+                messagebox.showerror("Registration Failed", message)
+        else:
+            messagebox.showerror("Registration Failed", "Please enter a username.")
+
+    def get_chat_history(self, partner):
+        request = {
+            "action": "get_chat_history",
+            "userUID": self.userUID,
+            "partner": partner,
+        }
+        response = self.send_request(request)
+        if response and response.get("success"):
+            return True, response.get("history")
+        else:
+            return (
+                False,
+                response.get("message") if response else "Failed to get chat history.",
+            )
 
 
 if __name__ == "__main__":
-    main()
+    app = MessagingApp()
+    app.mainloop()

@@ -1,183 +1,216 @@
-# Non-instant messaging system server
-import datetime
+# server.py
+import os
+import json
+import socket
+import logging
 from datetime import datetime
-from socketserver import *
-import os, socket
+from socketserver import ThreadingMixIn, TCPServer, BaseRequestHandler
+from pathlib import Path
+import shutil
 
-USER_DIR = "users"
+USER_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "users"
+print(USER_DIR)
+
+
+class ThreadedTCPServer(ThreadingMixIn, TCPServer):
+    """Handle requests in a separate thread."""
+
+
+def get_all_users(exclude_user=None):
+    user_directory_path = USER_DIR
+    all_users = [user.name for user in user_directory_path.iterdir() if user.is_dir()]
+    if exclude_user:
+        all_users = [user for user in all_users if user != exclude_user]
+    return all_users
+
+
+def get_chat_history(username, partner):
+    messages = []
+    user_dir = Path("users") / username / "read"
+    partner_dir = Path("users") / partner / "read"
+
+    # Read user's messages from the partner
+    for message_file in user_dir.glob(f"{partner}_*.json"):
+        with open(message_file, "r") as file:
+            messages.append(json.load(file))
+
+    # Read partner's messages to the user
+    for message_file in partner_dir.glob(f"{username}_*.json"):
+        with open(message_file, "r") as file:
+            messages.append(json.load(file))
+
+    # Sort messages by timestamp
+    messages.sort(key=lambda msg: msg["timestamp"])
+
+    return messages
+
+
+def mark_message_as_read(user_dir, partner, message_filename):
+    # Define the current time when the message is read
+    read_time = datetime.now().strftime("%Y%m%d%H%M%S")
+    unread_message_path = user_dir / "unread" / message_filename
+    read_message_path = user_dir / "read" / message_filename
+
+    # Load the message, add the read time
+    with open(unread_message_path, "r") as file:
+        message = json.load(file)
+
+    message["read_at"] = read_time  # Add 'read_at' key
+
+    # Write the updated message with the 'read_at' back to the file
+    with open(unread_message_path, "w") as file:
+        json.dump(message, file)
+
+    # Move the file to the read directory
+    shutil.move(str(unread_message_path), str(read_message_path))
+
+    return message
+
+
+def get_chat_history(username, partner):
+    messages = []
+    added_messages = set()
+    user_dir = Path("users") / username
+    partner_dir = Path("users") / partner
+
+    # Read unread messages first, mark as read, then append to the messages list
+    for message_file in user_dir.glob("unread/{}_*.json".format(partner)):
+        message = mark_message_as_read(user_dir, partner, message_file.name)
+        message_key = (
+            message.get("from"),
+            message.get("message"),
+            message.get("sent_at"),
+        )
+        if message_key not in added_messages:
+            messages.append(message)
+            added_messages.add(message_key)
+
+    # Read user's read messages from the partner
+    for message_file in user_dir.glob("read/{}_*.json".format(partner)):
+        with open(message_file, "r") as file:
+            message = json.load(file)
+            message_key = (
+                message.get("from"),
+                message.get("message"),
+                message.get("sent_at"),
+            )
+            if message_key not in added_messages:
+                messages.append(message)
+                added_messages.add(message_key)
+
+    # Read partner's messages to the user
+    for message_file in partner_dir.glob("read/{}_*.json".format(username)):
+        with open(message_file, "r") as file:
+            message = json.load(file)
+            message_key = (
+                message.get("from"),
+                message.get("message"),
+                message.get("sent_at"),
+            )
+            if message_key not in added_messages:
+                messages.append(message)
+                added_messages.add(message_key)
+
+    # Sort messages by 'sent_at' instead of 'timestamp'
+    messages.sort(key=lambda msg: msg["sent_at"])
+
+    return messages
 
 
 class RequestHandler(BaseRequestHandler):
-    # -------- Interactions with client -------- #
-    def getLatestMessage(self, userUID):
-        if userUID not in os.listdir(USER_DIR):
-            self.request.sendall(b"User does not exist")
-            return
-
-        userDir = os.path.join(USER_DIR, userUID)
-        unreadMessageDir = os.path.join(userDir, "unread")
-        files = os.listdir(unreadMessageDir)
-
-        if len(files) == 0:
-            self.request.sendall(b"No new messages")
-            return
-
-        all_messages = []
-        senderUID = ""
-        filename = ""
-        for file in files:
-            message_path = os.path.join(unreadMessageDir, file)
-            with open(message_path, "r") as message_file:
-                lines = message_file.readlines()
-                senderUID = lines[0].split("From:")[1].strip()
-                filename = lines[1]
-                file_obj = datetime.strptime(
-                    filename.strip(), "Time: %d %m %Y at %H:%M:%S"
-                )
-                formatted_file = file_obj.strftime("%Y-%m-%d_%H-%M-%S")
-                all_messages.extend(lines)
-                message_file.close()
-            if not "Read at:" in lines[-1]:
-                with open(
-                    os.path.join(USER_DIR, senderUID, "sent", formatted_file), "a"
-                ) as message_file:
-                    message_file.write(
-                        "\nRead at: {}\n".format(
-                            datetime.now().strftime("%d %m %Y at %H:%M:%S")
-                        )
-                    )
-                    message_file.close()
-            # Uncomment the line below if you wish to delete the message after reading
-            # os.remove(message_path)
-
-        response = "\\n".join(all_messages)
-        self.request.sendall(response.encode("utf-8"))
-        # self.request.shutdown(socket.SHUT_WR)
-
-    def writeMessage(self, userUID, receiverUID, message):
-        senderDir = os.path.join(USER_DIR, userUID)
-        receiverDir = os.path.join(USER_DIR, receiverUID)
-
-        if receiverUID not in os.listdir(USER_DIR):
-            self.request.sendall(b"User does not exist")
-            return
-
-        if not os.path.exists(os.path.join(senderDir, "sent")):
-            os.makedirs(os.path.join(senderDir, "sent"))
-
-        filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        open(os.path.join(receiverDir, "unread", filename), "w").write(
-            "From: "
-            + userUID
-            + "\nTime: "
-            + datetime.now().strftime("%d %m %Y at %H:%M:%S")
-            + "\nMessage: "
-            + message
-            + "\n"
-        )
-        open(os.path.join(senderDir, "sent", filename), "w").write(
-            "To: "
-            + receiverUID
-            + "\nTime: "
-            + datetime.now().strftime("%d %m %Y at %H:%M:%S")
-            + "\nMessage:"
-            + message
-        )
-        self.request.sendall(b"Message sent successfully")
-
-    def getSentMessages(self, senderUID):
-        # Get the filepath for the sender's messages
-        folderPath = os.path.join(USER_DIR, senderUID, "sent")
-
-        sent_messages = []
-
-        # Open the file and read all the messages
-        for file in os.listdir(folderPath):
-            with open(os.path.join(folderPath, file), "r") as fileReader:
-                lines = fileReader.readlines()
-                sent_messages.extend(lines)
-        print(sent_messages)
-        # If no messages found
-        if not sent_messages:
-            self.request.sendall("No sent messages.".encode())
-        else:
-            formatted_messages = "\n".join(sent_messages)
-            self.request.sendall(formatted_messages.encode())
-
-    def deleteMessage(self, userUID, messageID):
-        pass
-
-    def saveMessage(self, userUID, message):
-        pass
-
-    # -------- Facilities Functions -------- #
-    def getFileFormat(self, filename):
-        return filename.split(".")[-1]
-
-    def handleRequestResponse(self, *_):
-        try:
-            self.request.sendall(b"Invalid command")
-        except BrokenPipeError:
-            print("Client disconnected unexpectedly.")
-            return
-
-    def registerUser(self, username, *args):
-        print("Registering user: {}".format(username))
-        if not os.path.exists(os.path.join(USER_DIR, username)):
-            os.makedirs(os.path.join(USER_DIR, username))
-            self.request.sendall(
-                b"User registered successfully as " + username.encode("utf-8")
-            )
-            os.makedirs(os.path.join(USER_DIR, username, "messages"))
-            os.makedirs(os.path.join(USER_DIR, username, "unread"))
-        else:
-            self.request.sendall(b"User already exists")
-
-    def loginUser(self, username):
-        if username in os.listdir(USER_DIR):
-            self.request.sendall(username.encode("utf-8"))
-        else:
-            self.request.sendall(b"User does not exist")
-
-    # Commands dictionary
-    def __init__(self, request, client_address, server):
-        self.commands = {
-            "register": self.registerUser,
-            "updates": self.getLatestMessage,
-            "sent": self.getSentMessages,
-            "delete": self.deleteMessage,
-            "save": self.saveMessage,
-            "login": self.loginUser,
-            "write": self.writeMessage,
-        }
-        super().__init__(request, client_address, server)
-
     def handle(self):
-        while True:
-            # Receive request from client
-            # Format: command [args]
-            request = self.request.recv(1024).decode("utf-8")
-            print("Request: {}".format(request))
+        data = self.request.recv(1024).strip()
+        data = json.loads(data.decode("utf-8"))
+        if data["action"] == "register":
+            self.handle_register(data["username"])
+        elif data["action"] == "login":
+            self.handle_login(data["username"])
+        elif data["action"] == "get_messages":
+            self.get_latest_messages(data["userUID"])
+        elif data["action"] == "send_message":
+            self.send_message(data["from_user"], data["to_user"], data["message"])
+        elif data["action"] == "list_users":
+            self.list_users(data.get("exclude_user"))
+        elif data["action"] == "get_chat_history":
+            chat_history = get_chat_history(data["userUID"], data["partner"])
+            response = json.dumps({"success": True, "history": chat_history})
+            self.request.sendall(response.encode())
 
-            parts = request.split(" ")
-            command = parts[0]
-            args = parts[1:]
+    def handle_login(self, username):
+        user_dir = USER_DIR / username
+        if user_dir.exists():
+            self.request.sendall(
+                json.dumps({"success": True, "message": "User logged in"}).encode()
+            )
+        else:
+            self.request.sendall(
+                json.dumps(
+                    {"success": False, "message": "User does not exist"}
+                ).encode()
+            )
 
-            handler = self.commands.get(command)
-            if handler is not None:
-                handler(*args)
-            else:
-                self.handleRequestResponse()
-                break
+    def handle_register(self, username):
+        user_dir = USER_DIR / username
+        if not user_dir.exists():
+            os.makedirs(user_dir)
+            os.makedirs(user_dir / "unread")
+            os.makedirs(user_dir / "read")
+            self.request.sendall(
+                json.dumps({"success": True, "message": "User registered"}).encode()
+            )
+        else:
+            self.request.sendall(
+                json.dumps(
+                    {"success": False, "message": "Username already taken"}
+                ).encode()
+            )
+
+    def get_latest_messages(self, userUID):
+        user_dir = USER_DIR / userUID
+        unread_dir = user_dir / "unread"
+        read_dir = user_dir / "read"
+        unread_messages = list(unread_dir.glob("*"))
+        messages = []
+        for message_file in unread_messages:
+            with message_file.open() as mf:
+                message = json.load(mf)
+                message["read_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                messages.append(message)
+            read_message_file = read_dir / message_file.name
+            message_file.rename(read_message_file)
+        self.request.sendall(json.dumps(messages).encode())
+
+    def send_message(self, userUID, recipient, message_content):
+        recipient_dir = USER_DIR / recipient / "unread"
+        if not recipient_dir.exists():
+            self.request.sendall(
+                json.dumps(
+                    {"success": False, "message": "Recipient does not exist"}
+                ).encode()
+            )
+            return
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        message_filename = f"{userUID}_{timestamp}.json"
+        message_file_path = recipient_dir / message_filename
+        with message_file_path.open("w") as message_file:
+            json.dump(
+                {"from": userUID, "message": message_content, "sent_at": timestamp},
+                message_file,
+            )
+        self.request.sendall(
+            json.dumps({"success": True, "message": "Message sent"}).encode()
+        )
+
+    def list_users(self, exclude_user):
+        user_list = get_all_users(exclude_user=exclude_user)
+        self.request.sendall(json.dumps({"success": True, "users": user_list}).encode())
+
+
+def run_server(host="0.0.0.0", port=2004):
+    server = ThreadedTCPServer((host, port), RequestHandler)
+    server.serve_forever()
 
 
 if __name__ == "__main__":
-    server = ThreadingTCPServer(("localhost", 2001), RequestHandler)
-
-    print(
-        "Server Address: {}:{}".format(
-            server.server_address[0], server.server_address[1]
-        )
-    )
-
-    server.serve_forever()
+    logging.basicConfig(level=logging.INFO)
+    run_server()
