@@ -9,9 +9,7 @@ import sv_ttk
 
 
 def convert_timestamp(timestamp_str):
-    # Parse the timestamp to a datetime object
     dt_object = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
-    # Convert the datetime object to the desired string format
     return dt_object.strftime("%b %d, %Y, %I:%M:%S %p")
 
 
@@ -20,9 +18,6 @@ class MessagingApp(tk.Tk):
         super().__init__()
         self.title("Messaging App")
         self.geometry("400x600")
-
-        # self.tk.call("source", "./Azure-ttk-theme-2.1.0/azure.tcl")
-        # # ttk.Style().theme_use("azure")
         sv_ttk.use_dark_theme()
 
         self.username = None
@@ -48,11 +43,9 @@ class MessagingApp(tk.Tk):
         )
 
     def show_chat_list(self):
-        # Clear the current GUI
         for widget in self.winfo_children():
             widget.destroy()
 
-        # Set up the chat list GUI
         chat_list_frame = tk.Frame(self)
         chat_list_frame.pack(pady=20)
 
@@ -76,7 +69,6 @@ class MessagingApp(tk.Tk):
             chat_list_frame, text="Back", command=self.init_login_interface
         ).pack(side=tk.BOTTOM)
 
-        # Retrieve the chat list from the server and update the chat listbox
         success, chat_list = self.client.get_chat_list()
         if success:
             self.update_chat_list(chat_list)
@@ -85,14 +77,13 @@ class MessagingApp(tk.Tk):
 
         self.chat_listbox.bind("<Double-Button-1>", self.on_select_chat_partner)
 
-        # Add a refresh button
         refresh_button = ttk.Button(
             chat_list_frame, text="Refresh", command=self.refresh_chat_list
         )
         refresh_button.pack(side=tk.BOTTOM)
 
     def update_chat_list(self, chat_list):
-        self.chat_listbox.delete(0, tk.END)  # Clear the current list
+        self.chat_listbox.delete(0, tk.END)
         for chat_partner in chat_list:
             self.chat_listbox.insert(tk.END, chat_partner)
 
@@ -132,18 +123,15 @@ class MessagingApp(tk.Tk):
             side=tk.BOTTOM
         )
 
-        # Fetch the chat history from the server and display it
         success, chat_history = self.client.get_chat_history(target_user)
         if success:
-            self.display_chat_history(
-                chat_history
-            )  # Call the function to display the history
+            self.display_chat_history(chat_history)
         else:
             messagebox.showerror("Error", "Could not retrieve chat history.")
 
     def display_chat_history(self, chat_history):
         self.chat_text.configure(state="normal")
-        self.chat_text.delete("1.0", tk.END)  # Clear existing text
+        self.chat_text.delete("1.0", tk.END)
 
         for message in chat_history:
             sender = message["from"]
@@ -158,32 +146,27 @@ class MessagingApp(tk.Tk):
 
             self.chat_text.insert(tk.END, f"{display_message}\n")
 
-        self.chat_text.yview(tk.END)  # Scroll to the bottom
+        self.chat_text.yview(tk.END)
         self.chat_text.configure(state="disabled")
 
     def send_message(self):
         message = self.message_entry.get().strip()
         if message:
-            # Send the message to the server
             success, response_message = self.client.send_message(
                 self.chat_partner, message
             )
             if success:
-                self.message_entry.delete(0, "end")  # Clear the input field
-                self.update_chat_history(
-                    self.chat_partner, message
-                )  # Update the chat history with the new message
+                self.message_entry.delete(0, "end")
+                self.update_chat_history(self.chat_partner, message)
             else:
                 messagebox.showerror("Error", response_message)
         else:
             messagebox.showwarning("Warning", "You cannot send an empty message.")
 
     def update_chat_history(self, target_user, message):
-        # This method should be updated to actually fetch and display the chat history
-        # For now, it simply appends the new message to the chat history text box
         self.chat_text.configure(state="normal")
         self.chat_text.insert(tk.END, f"{self.username}: {message}\n")
-        self.chat_text.yview(tk.END)  # Scroll to the bottom
+        self.chat_text.yview(tk.END)
         self.chat_text.configure(state="disabled")
 
     def login(self):
